@@ -210,7 +210,7 @@ body {
 
 /* Bouton flottant */
 .btn-floating {
-    position: fixed; top: 630px; right: 5px; z-index: 999;
+    position: fixed; top: 810px; right: 5px; z-index: 999;
     display: flex; align-items: center; gap: 8px; padding: 10px 20px;
     border-radius: var(--radius-pill); border: none; background: white;
     box-shadow: var(--shadow-float); cursor: pointer; font-family: inherit;
@@ -355,7 +355,7 @@ body {
     .search-item label { font-size: 10px; }
     .search-item input, .search-item select { font-size: 13px; }
     .search-btn { width: 38px; height: 38px; }
-    .btn-floating { top: 630px; right: 5px; padding: 10px 14px; font-size: 13px; }
+    .btn-floating { top: 810px; right: 5px; padding: 10px 14px; font-size: 13px; }
     .hotel-sidebar { width: 420px; max-width: 85vw; }
     .sidebar-hero { height: 260px; }
 }
