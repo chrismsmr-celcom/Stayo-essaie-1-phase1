@@ -1,5 +1,5 @@
 // ==========================
-// map-utils.js - STAYO Premium
+// map-utils.js - STAYO Phase 2 Final
 // ==========================
 
 const map = L.map('map', {
@@ -11,159 +11,37 @@ const map = L.map('map', {
 
 L.control.zoom({ position: 'bottomright' }).addTo(map);
 
+// Fond de carte premium (gratuit)
 L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
     attribution: '',
     subdomains: 'abcd',
     maxZoom: 20
 }).addTo(map);
 
-const tooltip = document.getElementById('tooltip');
 const loadingBar = document.getElementById('loadingBar');
 const toast = document.getElementById('toast');
 
-// ========== DATES — Flowbite Date Range Picker ==========
-
-function formatDateYYYYMMDD(date) {
-    const y = date.getFullYear();
-    const m = String(date.getMonth() + 1).padStart(2, '0');
-    const d = String(date.getDate()).padStart(2, '0');
-    return y + '-' + m + '-' + d;
-}
-
-const today = new Date();
-const checkinDate = new Date(today);
-checkinDate.setDate(today.getDate() + 7);
-const checkoutDate = new Date(today);
-checkoutDate.setDate(today.getDate() + 9);
-
-document.getElementById('checkin').value = formatDateYYYYMMDD(checkinDate);
-document.getElementById('checkout').value = formatDateYYYYMMDD(checkoutDate);
-
-// Écouter les changements Flowbite
-document.getElementById('checkin').addEventListener('change', function() {
-    if (typeof refreshViewportSearch === 'function') refreshViewportSearch();
-});
-document.getElementById('checkout').addEventListener('change', function() {
-    if (typeof refreshViewportSearch === 'function') refreshViewportSearch();
-});
-
 // ========== ICONES PRIX ==========
-
 function createPriceIcon(price, currency) {
-    const symbols = { 'EUR': '€', 'GBP': '£', 'USD': '$' };
-    const symbol = symbols[currency] || currency;
-    let displayPrice;
-    if (price >= 1000) {
-        displayPrice = (price / 1000).toFixed(1).replace(/\.0$/, '') + 'k';
-    } else {
-        displayPrice = Math.round(price);
-    }
+    var symbols = { 'EUR': '€', 'GBP': '£', 'USD': '$' };
+    var symbol = symbols[currency] || currency;
+    var dp = price >= 1000 ? (price / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : Math.round(price);
     return L.divIcon({
         className: 'price-icon',
-        html: `<div class="price-marker">${symbol}${displayPrice}</div>`,
-        iconSize: [65, 36],
-        iconAnchor: [32, 36],
-        popupAnchor: [0, -36]
+        html: '<div class="price-marker">' + symbol + dp + '</div>',
+        iconSize: [65, 36], iconAnchor: [32, 36], popupAnchor: [0, -36]
     });
 }
 
 function createNoPriceIcon() {
     return L.divIcon({
         className: 'price-icon',
-        html: `<div class="price-marker no-price">&mdash;</div>`,
-        iconSize: [45, 36],
-        iconAnchor: [22, 36],
-        popupAnchor: [0, -36]
+        html: '<div class="price-marker no-price">&mdash;</div>',
+        iconSize: [45, 36], iconAnchor: [22, 36], popupAnchor: [0, -36]
     });
 }
 
-// ========== TOOLTIP ==========
-
-function positionTooltip(e) {
-    const tw = tooltip.offsetWidth || 300;
-    const th = tooltip.offsetHeight || 350;
-    let left = e.originalEvent.clientX + 16;
-    let top = e.originalEvent.clientY - 20;
-    if (left + tw > window.innerWidth - 10) left = e.originalEvent.clientX - tw - 16;
-    if (top + th > window.innerHeight - 10) top = window.innerHeight - th - 10;
-    if (left < 10) left = 10;
-    if (top < 90) top = 90;
-    tooltip.style.left = left + 'px';
-    tooltip.style.top = top + 'px';
-}
-
-function showTooltip(e, hotel) {
-    const symbols = { 'EUR': '€', 'GBP': '£', 'USD': '$' };
-    const symbol = symbols[hotel.currency] || hotel.currency;
-
-    const imageArea = document.getElementById('tooltipImageArea');
-    if (hotel.thumbnail) {
-        imageArea.innerHTML = `<img src="${hotel.thumbnail}" alt="${hotel.name}" onerror="this.parentElement.innerHTML='<div class=tooltip-image-placeholder><img src=https://ukbekfcjfcjcqrpxfpmq.supabase.co/storage/v1/object/public/logo%20luvia/STAYO%20ICON%20PIN.png alt=STAYO style=width:40px;height:40px;opacity:0.5; /></div>'" />`;
-    } else {
-        imageArea.innerHTML = `<div class="tooltip-image-placeholder"><img src="https://ukbekfcjfcjcqrpxfpmq.supabase.co/storage/v1/object/public/logo%20luvia/STAYO%20ICON%20PIN.png" alt="STAYO" style="width:40px;height:40px;opacity:0.5;" /></div>`;
-    }
-
-    document.getElementById('tooltipName').textContent = hotel.name;
-
-    const locSpan = document.querySelector('#tooltipLocation span');
-    if (locSpan) locSpan.textContent = hotel.location || '';
-
-    const ratingEl = document.getElementById('tooltipRating');
-    if (hotel.rating) {
-        ratingEl.textContent = hotel.rating + (hotel.reviewCount ? ' (' + hotel.reviewCount + ')' : '');
-        ratingEl.parentElement.style.display = 'inline-flex';
-    } else {
-        ratingEl.parentElement.style.display = 'none';
-    }
-
-    const starsEl = document.getElementById('tooltipStars');
-    if (hotel.stars > 0) {
-        const s = Math.min(hotel.stars, 5);
-        starsEl.textContent = '\u2605'.repeat(s) + '\u2606'.repeat(5 - s);
-        starsEl.style.display = 'inline-flex';
-    } else {
-        starsEl.style.display = 'none';
-    }
-
-    const boardSpan = document.querySelector('#tooltipBoard');
-    if (hotel.boardType && boardSpan) {
-        boardSpan.textContent = hotel.boardType;
-        boardSpan.parentElement.style.display = 'inline-flex';
-    } else if (boardSpan) {
-        boardSpan.parentElement.style.display = 'none';
-    }
-
-    const cancelEl = document.getElementById('tooltipCancellation');
-    if (hotel.refundable === 'RFN') {
-        cancelEl.innerHTML = '<img src="https://img.icons8.com/3d-fluency/94/cancel.png" alt="cancel" style="width:14px;height:14px;" /> Annulable';
-        cancelEl.className = 'badge badge-cancellation refundable';
-        cancelEl.style.display = 'inline-flex';
-    } else if (hotel.refundable === 'NRFN') {
-        cancelEl.innerHTML = '<img src="https://img.icons8.com/3d-fluency/94/cancel.png" alt="cancel" style="width:14px;height:14px;" /> Non annulable';
-        cancelEl.className = 'badge badge-cancellation';
-        cancelEl.style.display = 'inline-flex';
-    } else {
-        cancelEl.style.display = 'none';
-    }
-
-    const priceEl = document.getElementById('tooltipPrice');
-    const perNightEl = document.getElementById('tooltipPerNight');
-    if (hotel.price && hotel.price > 0) {
-        priceEl.textContent = symbol + hotel.price.toLocaleString() + ' total';
-        priceEl.style.color = '#1a1a2e';
-        perNightEl.textContent = '';
-    } else {
-        priceEl.textContent = '\u2014';
-        priceEl.style.color = '#9ca3af';
-        perNightEl.textContent = '';
-    }
-
-    positionTooltip(e);
-    tooltip.classList.add('visible');
-}
-
-function hideTooltip() { tooltip.classList.remove('visible'); }
-
+// ========== TOAST ==========
 function showToast(message, isError) {
     toast.textContent = message;
     toast.className = 'toast' + (isError ? ' error' : '');
@@ -171,24 +49,66 @@ function showToast(message, isError) {
     setTimeout(function() { toast.classList.remove('show'); }, 3500);
 }
 
-function goToMyLocation() {
-    if (!navigator.geolocation) {
-        showToast('Geolocalisation non supportee.', true);
-        return;
+// ========== COUNTER TOAST ==========
+var counterTimeout;
+function showHotelCount(count) {
+    var el = document.getElementById('hotelCount');
+    var info = document.getElementById('resultsInfo');
+    if (el) el.textContent = String(count);
+    if (info) {
+        info.classList.add('show');
+        clearTimeout(counterTimeout);
+        counterTimeout = setTimeout(function() { info.classList.remove('show'); }, 2500);
     }
+}
+
+// ========== GEOLOC ==========
+var userMarker = null; // Marqueur de position utilisateur
+
+function goToMyLocation() {
+    if (!navigator.geolocation) return;
     navigator.geolocation.getCurrentPosition(
         function(pos) {
-            map.setView([pos.coords.latitude, pos.coords.longitude], 15, { animate: true, duration: 0.6 });
+            var lat = pos.coords.latitude;
+            var lng = pos.coords.longitude;
+            
+            // Icône personnalisée pour la position utilisateur
+            var userIcon = L.icon({
+                iconUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADIAAAAyCAYAAAAeP4ixAAAACXBIWXMAAAsTAAALEwEAmpwYAAACpElEQVR4nO3a30tTYRzH8QeJiC676a7+iG6TUFDwZtNNGWcTtqmbP4bp3HA4xOk2xY2JXuzmoLd1IVhQInLcOmyEIz12oxf5s6nNBKPEX0Xp+cTEhrmsKcZ5jpw3fP6A18X34oGHEKXcAs/fSI/IuXmfz7hqseysVlXtL3Z324jcWgqFHqw0NS1vqNXYUKkyS9psm8uh0ENCe3N9fXeW29rGPpSXi6cBp5fSarHiciU2BwfvEhpb8Hp9awbDj/MAZ7eu1x8udXSw8HjyCA3N9/QwSat1O1fA2SWrq/cW/f4aSRFJl2v27B1camo13jmds5JBjior8amlBR81mksjUmo1pqxWjBYVQTIIdDqk981iwWZj44URc2YzxsvK8DI//3hEasiv7aYxZvM/AQt6PaIGQwZAHQQ6HUSGwRe7HRsMkwVYq6jAa4sFowUFWQjqIDjZodGILbsdqdJSpFQqzNTUYKyk5I8AqiE42de6OoxrNH8FyAICnS4nhAK5ihRIvgL5P10byI7DsX5VkHGTaZ1I2ZbfX3dQX79/WciYVnvwyu1+TGgIPH9jy+djv5tMRzlDiovFiebmZ8Mez01CW6ne3nuf29vfiAbDuZAXhYXgamvfRn2++4T2ZicmsO12Z0GGbTaEAgHpjvqiCYKA9BZGRnDQ0IDnDINwMIjOzs7jEblBBEHAzNQUurq6MgjZQgRB+A2hQKRIgdCWAqEtBUJbCoS2FAhtKRDaujaQycnJ99PT01mQ9LtkYGBgl8ileDzORKNRMZFIZCDBYBB+v19kWdZI5BTP81GO4xCLxRAIBOB0OtHf3x8hcovn+VuRSGQ3jXE4HPB6vXssy94mciwejz/iOE5sbW3F0NBQMZFzsVjsaTgcfkLkHoA8Dy3fNIgM+gklaLWio5vstAAAAABJRU5ErkJggg==',
+                iconSize: [50, 50],
+                iconAnchor: [25, 50],
+                popupAnchor: [0, -50]
+            });
+            
+            // Supprimer l'ancien marqueur s'il existe
+            if (userMarker) map.removeLayer(userMarker);
+            
+            // Ajouter le marqueur rouge
+            userMarker = L.marker([lat, lng], {
+                icon: userIcon,
+                zIndexOffset: 1000
+            }).addTo(map);
+            
+            // Centrer la carte
+            map.setView([lat, lng], 15, { animate: true });
+            
+            // Trouver l'hôtel le plus proche
+            if (typeof findNearestHotel === 'function') findNearestHotel(lat, lng);
         },
         function() { showToast('Impossible de vous localiser.', true); },
-        { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 }
+        { enableHighAccuracy: true }
     );
 }
 
-document.addEventListener('click', function(e) {
-    if (!e.target.closest('.leaflet-marker-icon') && !e.target.closest('.price-marker')) {
-        hideTooltip();
-    }
-});
+// ========== UI HELPERS ==========
+function toggleFilters() {
+    var f = document.getElementById('quickFilters');
+    if (f) f.style.display = f.style.display === 'none' ? 'flex' : 'none';
+}
+
+function updateSearch(type) {
+    var i = document.getElementById('aiSearchInput');
+    if (i) i.value = type;
+}
 
 window.addEventListener('resize', function() { map.invalidateSize(); });
