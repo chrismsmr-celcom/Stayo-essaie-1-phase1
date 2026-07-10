@@ -1,406 +1,431 @@
 // ==========================
-// liteapi.js
-// LiteAPI : data/hotels (coords) + hotels/rates (prix) + sidebar + deep link
+// liteapi.js - STAYO V2 Final
 // ==========================
 
 const API_KEY = 'prod_3a27a498-2b18-43a8-a91e-f3f241c889a7';
 const BASE_URL = 'https://api.liteapi.travel/v3.0';
-
-// ⚠️ REMPLACEZ PAR VOTRE DOMAINE WHITELABEL
 const WL_DOMAIN = 'luviaplace.com';
+const STAYO_ENGINE_URL = 'http://localhost:8000';
 
 var allMarkers = [];
 var allHotelsData = [];
 var updateTimeout = null;
 var currentRequestId = 0;
 var activeController = null;
+var currentSearchParams = {
+    checkin: getDefaultDate(7),
+    checkout: getDefaultDate(9),
+    adults: 2,
+    currency: 'EUR'
+};
 
-var CACHE_TTL_MS = 60000;
+var CACHE_TTL_MS = 15 * 60 * 1000;
 var ratesCache = new Map();
-
 var markersLayer = L.layerGroup().addTo(map);
 
-// ========== SIDEBAR ==========
+// ========== HELPERS ==========
+function getDefaultDate(d) { var dt = new Date(); dt.setDate(dt.getDate() + d); return dt.toISOString().split('T')[0]; }
 
+function openUberToHotel(lat, lng, name) {
+    window.open('https://m.uber.com/ul/?action=setPickup&pickup=my_location&dropoff[latitude]=' + lat + '&dropoff[longitude]=' + lng + '&dropoff[nickname]=' + encodeURIComponent(name), '_blank');
+}
+
+function openGetYourGuide(lat, lng, city) {
+    window.open('https://www.getyourguide.fr/s/?q=' + encodeURIComponent(city || 'activites') + '&partner_id=TNCQUZX&cmp=share_to_earn&lat=' + lat + '&lng=' + lng, '_blank');
+}
+
+// ========== SIDEBAR ==========
 var sidebar = document.getElementById('hotelSidebar');
 var sidebarOverlay = document.getElementById('sidebarOverlay');
 var sidebarContent = document.getElementById('sidebarContent');
 
 function openSidebar() {
-    sidebar.classList.add('open');
-    sidebarOverlay.classList.add('open');
+    sidebar.classList.add('open'); sidebarOverlay.classList.add('open');
     document.body.style.overflow = 'hidden';
+    var hub = document.getElementById('aiHub');
+    if (hub && window.innerWidth <= 600) hub.style.display = 'none';
 }
 
 function closeSidebar() {
-    sidebar.classList.remove('open');
-    sidebarOverlay.classList.remove('open');
+    sidebar.classList.remove('open'); sidebarOverlay.classList.remove('open');
     document.body.style.overflow = '';
     sidebarContent.innerHTML = '<div class="sidebar-loading"><div class="spinner"></div><p>Selectionnez un logement</p></div>';
+    var hub = document.getElementById('aiHub'); if (hub) hub.style.display = '';
 }
 
 sidebarOverlay.addEventListener('click', closeSidebar);
-document.addEventListener('keydown', function(e) {
-    if (e.key === 'Escape') closeSidebar();
-});
+document.addEventListener('keydown', function(e) { if (e.key === 'Escape') closeSidebar(); });
 
 // ========== DEEP LINK ==========
-
-function buildHotelDeepLink(hotelId, checkin, checkout, adults, currency, language) {
-    var occupancies = [{ adults: adults, children: [] }];
-    var occupanciesBase64 = btoa(JSON.stringify(occupancies));
-    var params = new URLSearchParams();
-    params.set('checkin', checkin);
-    params.set('checkout', checkout);
-    params.set('occupancies', occupanciesBase64);
-    if (currency) params.set('currency', currency);
-    if (language) params.set('language', language);
-    return 'https://' + WL_DOMAIN + '/hotels/' + hotelId + '?' + params.toString();
-}
-
-function buildBookingDeepLink(offerId, currency, language) {
-    var params = new URLSearchParams();
-    if (currency) params.set('currency', currency);
-    if (language) params.set('language', language);
-    var qs = params.toString();
-    return 'https://' + WL_DOMAIN + '/booking?offerId=' + offerId + (qs ? '&' + qs : '');
+function buildHotelDeepLink(id, ci, co, ad, cu, lang) {
+    var occ = btoa(JSON.stringify([{ adults: ad, children: [] }]));
+    var p = new URLSearchParams(); p.set('checkin', ci); p.set('checkout', co); p.set('occupancies', occ);
+    if (cu) p.set('currency', cu); if (lang) p.set('language', lang);
+    return 'https://' + WL_DOMAIN + '/hotels/' + id + '?' + p.toString();
 }
 
 // ========== FORMATTERS ==========
-
 function formatCancellation(policies) {
-    if (!policies || !policies.cancelPolicyInfos || policies.cancelPolicyInfos.length === 0) {
-        return '<p>Aucune information disponible.</p>';
-    }
-    var isRefundable = policies.refundableTag === 'RFN';
-    var html = '';
-    if (isRefundable) {
-        html += '<p class="refundable-badge"><img src="https://img.icons8.com/3d-fluency/94/cancel.png" alt="cancel" style="width:20px;height:20px;" /> Annulation gratuite possible</p>';
-    } else {
-        html += '<p class="non-refundable-badge"><img src="https://img.icons8.com/3d-fluency/94/cancel.png" alt="cancel" style="width:20px;height:20px;" /> Non remboursable</p>';
-    }
-    policies.cancelPolicyInfos.forEach(function(policy, i) {
-        var d = new Date(policy.cancelTime);
-        var formattedDate = d.toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' });
-        var amount = policy.amount ? policy.amount + ' ' + policy.currency : 'Non specifie';
-        html += '<div class="policy-item"><p><strong>Politique ' + (i + 1) + '</strong></p><p>Avant le : ' + formattedDate + ' (' + policy.timezone + ')</p><p>Frais : ' + amount + '</p></div>';
+    if (!policies || !policies.cancelPolicyInfos || !policies.cancelPolicyInfos.length) return '<p>Aucune information disponible.</p>';
+    var html = (policies.refundableTag === 'RFN' ? '<p class="refundable-badge">Annulation gratuite possible</p>' : '<p class="non-refundable-badge">Non remboursable</p>');
+    policies.cancelPolicyInfos.forEach(function(p, i) {
+        var d = new Date(p.cancelTime).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+        html += '<div class="policy-item"><p><strong>Politique ' + (i+1) + '</strong></p><p>Avant le : ' + d + ' (' + p.timezone + ')</p><p>Frais : ' + (p.amount ? p.amount + ' ' + p.currency : 'Non specifie') + '</p></div>';
     });
     return html;
 }
 
-function showSidebarLoading() {
-    sidebarContent.innerHTML = '<div class="sidebar-loading"><div class="spinner"></div><p>Chargement des details...</p></div>';
-}
-
-function showSidebarError(msg) {
-    sidebarContent.innerHTML = '<div class="sidebar-error"><p>' + msg + '</p><button onclick="closeSidebar()">Fermer</button></div>';
-}
-
-async function fetchHotelDetails(hotelId) {
+// ========== FETCH DETAILS ==========
+async function fetchHotelDetails(id) {
     try {
-        var res = await fetch(BASE_URL + '/data/hotel?hotelId=' + hotelId + '&language=fr', {
-            headers: { 'X-API-Key': API_KEY, 'Accept': 'application/json' }
-        });
-        if (!res.ok) throw new Error('Erreur ' + res.status);
-        var json = await res.json();
-        return json.data || null;
-    } catch (err) { return null; }
+        var r = await fetch(BASE_URL + '/data/hotel?hotelId=' + id + '&language=fr', { headers: { 'X-API-Key': API_KEY, 'Accept': 'application/json' } });
+        if (!r.ok) throw new Error('Erreur ' + r.status);
+        return (await r.json()).data || null;
+    } catch (e) { return null; }
 }
 
-async function openHotelSidebar(hotelData) {
-    var hotelId = hotelData.id;
-    var checkin = document.getElementById('checkin').value;
-    var checkout = document.getElementById('checkout').value;
-    var adults = parseInt(document.getElementById('adults').value, 10) || 2;
-    var currency = document.getElementById('currency').value;
-    var language = 'fr';
-
+// ========== OPEN SIDEBAR ==========
+async function openHotelSidebar(hd) {
+    var id = hd.id, ci = currentSearchParams.checkin, co = currentSearchParams.checkout;
+    var ad = currentSearchParams.adults, cu = currentSearchParams.currency, lang = 'fr';
     openSidebar();
-    showSidebarLoading();
+    sidebarContent.innerHTML = '<div class="sidebar-loading"><div class="spinner"></div><p>Chargement...</p></div>';
 
-    var details = await fetchHotelDetails(hotelId);
-    if (!details) { showSidebarError('Impossible de charger les details.'); return; }
+    var details = await fetchHotelDetails(id);
+    var sym = { 'EUR': '\u20AC', 'GBP': '\u00A3', 'USD': '$' }, symbol = sym[cu] || cu;
 
-    var symbols = { 'EUR': '\u20AC', 'GBP': '\u00A3', 'USD': '$' };
-    var symbol = symbols[currency] || currency;
+    var mainImage = hd.thumbnail || null, facilities = [], facilitiesList = '', hasMore = false;
+    var checkinTime = 'Non specifie', checkoutTime = 'Non specifie', checkinStart = '';
+    var stars = hd.stars || 0, rating = hd.rating || null, reviewCount = hd.reviewCount || 0;
+    var cancellationHtml = '<p>Aucune information disponible.</p>';
+    var galleryHtml = '', description = '', importantInfo = '';
+    var addressText = [hd.address, hd.city, hd.country].filter(Boolean).join(', ') || 'Adresse non disponible';
 
-    var mainImage = (details.hotelImages && details.hotelImages.find(function(img) { return img.defaultImage; }))
-        ? details.hotelImages.find(function(img) { return img.defaultImage; }).url
-        : ((details.hotelImages && details.hotelImages[0]) ? details.hotelImages[0].url : (hotelData.thumbnail || null));
-
-    var facilities = details.hotelFacilities || [];
-    var facilitiesList = facilities.slice(0, 12).map(function(f) { return '<li>' + f + '</li>'; }).join('');
-    var hasMore = facilities.length > 12;
-    var checkinTime = (details.checkinCheckoutTimes && details.checkinCheckoutTimes.checkin) ? details.checkinCheckoutTimes.checkin : 'Non specifie';
-    var checkoutTime = (details.checkinCheckoutTimes && details.checkinCheckoutTimes.checkout) ? details.checkinCheckoutTimes.checkout : 'Non specifie';
-    var checkinStart = (details.checkinCheckoutTimes && details.checkinCheckoutTimes.checkinStart) ? details.checkinCheckoutTimes.checkinStart : '';
-    var stars = details.starRating || hotelData.stars || 0;
-    var rating = details.rating || hotelData.rating || null;
-    var reviewCount = details.reviewCount || hotelData.reviewCount || 0;
-    var priceDisplay = hotelData.price ? symbol + hotelData.price.toLocaleString() : 'Prix non disponible';
-    var nights = Math.max(1, Math.round((new Date(checkout) - new Date(checkin)) / (1000 * 60 * 60 * 24)));
-    var pricePerNight = hotelData.price ? Math.round(hotelData.price / nights) : null;
-    var pricePerNightDisplay = pricePerNight ? symbol + pricePerNight.toLocaleString() : null;
-    var cancellationHtml = formatCancellation(details.cancellationPolicies);
-    var galleryImages = (details.hotelImages || []).slice(0, 8);
-    var galleryHtml = galleryImages.map(function(img) { return '<img src="' + img.url + '" alt="' + (img.caption || 'Hotel') + '" loading="lazy" onerror="this.style.display=\'none\'" />'; }).join('');
-    var hotelDeepLink = buildHotelDeepLink(hotelId, checkin, checkout, adults, currency, language);
-    var bookingDeepLink = hotelData.offerId ? buildBookingDeepLink(hotelData.offerId, currency, language) : null;
-    var checkinFormatted = new Date(checkin).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: 'numeric' });
-    var checkoutFormatted = new Date(checkout).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: 'numeric' });
-    var addressText = [details.address, details.city, details.country].filter(Boolean).join(', ') || 'Adresse non disponible';
-    var starsText = '';
-    if (stars > 0) {
-        var s = Math.min(Math.round(stars), 5);
-        starsText = '\u2605'.repeat(s) + '\u2606'.repeat(Math.max(0, 5 - s));
+    if (details) {
+        mainImage = (details.hotelImages && details.hotelImages.find(function(img){return img.defaultImage;})) ? details.hotelImages.find(function(img){return img.defaultImage;}).url : ((details.hotelImages||[])[0]||{}).url || mainImage;
+        facilities = details.hotelFacilities || [];
+        facilitiesList = facilities.slice(0,12).map(function(f){return '<li>'+f+'</li>';}).join('');
+        hasMore = facilities.length > 12;
+        checkinTime = (details.checkinCheckoutTimes||{}).checkin || 'Non specifie';
+        checkoutTime = (details.checkinCheckoutTimes||{}).checkout || 'Non specifie';
+        checkinStart = (details.checkinCheckoutTimes||{}).checkinStart || '';
+        stars = details.starRating || stars;
+        rating = details.rating || rating;
+        reviewCount = details.reviewCount || reviewCount;
+        cancellationHtml = formatCancellation(details.cancellationPolicies);
+        galleryHtml = (details.hotelImages||[]).slice(0,8).map(function(img){return '<img src="'+img.url+'" alt="'+(img.caption||'Hotel')+'" loading="lazy" onerror="this.style.display=\'none\'" />';}).join('');
+        description = details.hotelDescription || '';
+        importantInfo = details.hotelImportantInformation || '';
+        addressText = [details.address, details.city, details.country].filter(Boolean).join(', ') || addressText;
     }
+
+    var priceDisplay = hd.price ? symbol + hd.price.toLocaleString() : 'Prix non disponible';
+    var nights = Math.max(1, Math.round((new Date(co) - new Date(ci)) / 86400000));
+    var pricePerNightDisplay = hd.price ? symbol + Math.round(hd.price / nights).toLocaleString() : null;
+    var hotelDeepLink = buildHotelDeepLink(id, ci, co, ad, cu, lang);
+    var bookingDeepLink = hd.offerId ? 'https://' + WL_DOMAIN + '/booking?offerId=' + hd.offerId + '&currency=' + cu + '&language=' + lang : null;
+    var ciFormatted = new Date(ci).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: 'numeric' });
+    var coFormatted = new Date(co).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: 'numeric' });
+    var starsText = stars > 0 ? '\u2605'.repeat(Math.min(Math.round(stars),5)) + '\u2606'.repeat(Math.max(0,5-Math.round(stars))) : '';
+    var mapsLink = (details && details.location && details.location.latitude) ? '<a href="https://maps.google.com/?q='+details.location.latitude+','+details.location.longitude+'" target="_blank" rel="noopener" class="maps-btn"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>Google Maps</a>' : '';
 
     sidebarContent.innerHTML =
         '<button class="sidebar-close-btn" onclick="closeSidebar()">&times;</button>' +
-        '<div class="sidebar-hero">' +
-            (mainImage
-                ? '<img src="' + mainImage + '" alt="' + (details.name || '') + '" onerror="this.parentElement.innerHTML=\'<div class=sidebar-hero-placeholder><img src=https://ukbekfcjfcjcqrpxfpmq.supabase.co/storage/v1/object/public/logo%20luvia/STAYO%20ICON%20PIN.png alt=STAYO style=width:50px;height:50px;opacity:0.4; /></div>\'" />'
-                : '<div class="sidebar-hero-placeholder"><img src="https://ukbekfcjfcjcqrpxfpmq.supabase.co/storage/v1/object/public/logo%20luvia/STAYO%20ICON%20PIN.png" alt="STAYO" style="width:50px;height:50px;opacity:0.4;" /></div>') +
-            '<div class="sidebar-hero-price">' + priceDisplay + '<span> total</span></div>' +
-        '</div>' +
+        '<div class="sidebar-hero">' + (mainImage ? '<img src="'+mainImage+'" alt="'+(hd.name||'')+'" onerror="this.parentElement.innerHTML=\'<div class=sidebar-hero-placeholder><img src=https://ukbekfcjfcjcqrpxfpmq.supabase.co/storage/v1/object/public/logo%20luvia/STAYO%20ICON%20PIN.png alt=STAYO style=width:50px;height:50px;opacity:0.4; /></div>\'" />' : '<div class="sidebar-hero-placeholder"><img src="https://ukbekfcjfcjcqrpxfpmq.supabase.co/storage/v1/object/public/logo%20luvia/STAYO%20ICON%20PIN.png" alt="STAYO" style="width:50px;opacity:0.4;" /></div>') + '<div class="sidebar-hero-price">'+priceDisplay+'<span> total</span></div></div>' +
         '<div class="sidebar-body">' +
-            '<h2>' + (details.name || hotelData.name) + '</h2>' +
-            '<p class="sidebar-address">' +
-                '<img src="https://img.icons8.com/isometric/50/map-pin.png" alt="pin" />' +
-                addressText +
-            '</p>' +
-            '<div class="sidebar-badges">' +
-                (stars > 0 ? '<span class="sidebar-stars"><img src="https://img.icons8.com/3d-sugary/100/star-17.png" alt="star" /> ' + starsText + '</span>' : '') +
-                (rating ? '<span class="sidebar-rating">' + rating + ' / 5</span>' : '') +
-                (reviewCount > 0 ? '<span class="sidebar-reviews">(' + reviewCount + ' avis)</span>' : '') +
-            '</div>' +
-
-            '<a href="' + hotelDeepLink + '" target="_blank" rel="noopener" class="sidebar-book-btn">' +
-                '<img src="https://img.icons8.com/3d-fluency/94/shopping-cart.png" alt="cart" />' +
-                'Reserver maintenant' +
-            '</a>' +
-            (bookingDeepLink ? '<a href="' + bookingDeepLink + '" target="_blank" rel="noopener" class="sidebar-book-btn secondary">Paiement direct</a>' : '') +
-
-            '<div class="sidebar-section">' +
-                '<h3><img src="https://img.icons8.com/3d-fluency/94/calendar--v2.png" alt="calendar" /> Votre sejour</h3>' +
-                '<div class="stay-summary">' +
-                    '<div class="stay-dates"><span>' + checkinFormatted + '</span><span class="stay-arrow">&rarr;</span><span>' + checkoutFormatted + '</span></div>' +
-                    '<div class="stay-details"><span>' + nights + ' nuit' + (nights > 1 ? 's' : '') + '</span><span>&middot;</span><span>' + adults + ' adulte' + (adults > 1 ? 's' : '') + '</span></div>' +
-                '</div>' +
-            '</div>' +
-
-            '<div class="sidebar-section">' +
-                '<h3><img src="https://img.icons8.com/isometric/50/bulleted-list.png" alt="list" /> Detail du prix</h3>' +
-                '<div class="price-breakdown">' +
-                    '<div class="price-row"><span>Prix total</span><span class="price-value">' + priceDisplay + '</span></div>' +
-                    (pricePerNightDisplay ? '<div class="price-row"><span>Par nuit (' + nights + ' nuits)</span><span class="price-value-secondary">' + pricePerNightDisplay + '</span></div>' : '') +
-                    (hotelData.boardType ? '<div class="price-row"><span>Pension</span><span class="board-badge"><img src="https://img.icons8.com/3d-fluency/94/tableware.png" alt="board" /> ' + hotelData.boardType + '</span></div>' : '') +
-                '</div>' +
-            '</div>' +
-
-            (details.hotelDescription ? '<div class="sidebar-section"><h3><img src="https://img.icons8.com/isometric/50/content.png" alt="desc" /> Description</h3><div class="sidebar-description">' + details.hotelDescription.substring(0, 500) + '...</div></div>' : '') +
-
-            (facilitiesList ? '<div class="sidebar-section"><h3><img src="https://img.icons8.com/3d-fluency/94/pool.png" alt="pool" /> Equipements</h3><ul class="sidebar-facilities">' + facilitiesList + (hasMore ? '<li class="more-facilities">...et ' + (facilities.length - 12) + ' autres</li>' : '') + '</ul></div>' : '') +
-
-            '<div class="sidebar-section">' +
-                '<h3><img src="https://img.icons8.com/3d-fluency/94/time.png" alt="time" /> Horaires</h3>' +
-                '<div class="check-times">' +
-                    '<div class="check-item"><span class="check-label">Check-in</span><span class="check-value">' + checkinTime + '</span>' + (checkinStart ? '<span class="check-sub">(des ' + checkinStart + ')</span>' : '') + '</div>' +
-                    '<div class="check-item"><span class="check-label">Check-out</span><span class="check-value">' + checkoutTime + '</span></div>' +
-                '</div>' +
-            '</div>' +
-
-            '<div class="sidebar-section">' +
-                '<h3><img src="https://img.icons8.com/3d-fluency/94/cancel.png" alt="cancel" /> Conditions d\'annulation</h3>' +
-                '<div class="sidebar-cancellation">' + cancellationHtml + '</div>' +
-            '</div>' +
-
-            (details.hotelImportantInformation ? '<div class="sidebar-section"><h3><img src="https://img.icons8.com/3d-fluency/94/error.png" alt="info" /> Informations importantes</h3><div class="sidebar-important">' + details.hotelImportantInformation + '</div></div>' : '') +
-
-            (galleryHtml ? '<div class="sidebar-section"><h3><img src="https://img.icons8.com/3d-fluency/94/stack-of-photos.png" alt="photos" /> Galerie (' + galleryImages.length + ' photos)</h3><div class="sidebar-gallery">' + galleryHtml + '</div></div>' : '') +
-
-            (details.location && details.location.latitude ? '<div class="sidebar-section"><a href="https://maps.google.com/?q=' + details.location.latitude + ',' + details.location.longitude + '" target="_blank" rel="noopener" class="sidebar-maps-link"><img src="https://img.icons8.com/isometric/50/map-pin.png" alt="pin" style="width:16px;height:16px;" /> Voir sur Google Maps</a></div>' : '') +
-
-            '<a href="' + hotelDeepLink + '" target="_blank" rel="noopener" class="sidebar-book-btn" style="margin-top:20px;">' +
-                '<img src="https://img.icons8.com/3d-fluency/94/shopping-cart.png" alt="cart" />' +
-                'Reserver sur STAYO' +
-            '</a>' +
+            '<h2>'+(hd.name||'Hotel')+'</h2>' +
+            '<div class="sidebar-address-row"><span class="sidebar-address">'+addressText+'</span>'+mapsLink+'</div>' +
+            '<div class="sidebar-badges">'+(stars>0?'<span class="sidebar-stars">'+starsText+'</span>':'')+(rating?'<span class="sidebar-rating">'+rating+' / 5</span>':'')+(reviewCount>0?'<span class="sidebar-reviews">('+reviewCount+' avis)</span>':'')+'</div>' +
+            '<a href="'+hotelDeepLink+'" target="_blank" rel="noopener" class="sidebar-book-btn">Reserver maintenant</a>' +
+            '<a href="#" onclick="openUberToHotel('+hd.lat+','+hd.lng+',\''+(hd.name||'Hotel')+'\');return false;" class="sidebar-book-btn secondary" style="display:flex;align-items:center;gap:8px;"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="1" y="3" width="15" height="13"/><polygon points="16 8 20 8 23 11 23 16 16 16"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>Commander un Uber</a>' +
+            '<a href="#" onclick="openGetYourGuide('+hd.lat+','+hd.lng+',\''+(hd.city||hd.name||'')+'\');return false;" class="sidebar-book-btn secondary" style="display:flex;align-items:center;gap:8px;"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>Activites a proximite</a>' +
+            (bookingDeepLink ? '<a href="'+bookingDeepLink+'" target="_blank" rel="noopener" class="sidebar-book-btn secondary">Paiement direct</a>' : '') +
+            '<div class="sidebar-section"><h3>Votre sejour</h3><div class="stay-summary"><div class="stay-dates"><span>'+ciFormatted+'</span><span class="stay-arrow">&rarr;</span><span>'+coFormatted+'</span></div><div class="stay-details"><span>'+nights+' nuit'+(nights>1?'s':'')+'</span><span>&middot;</span><span>'+ad+' adulte'+(ad>1?'s':'')+'</span></div></div></div>' +
+            '<div class="sidebar-section"><h3>Detail du prix</h3><div class="price-breakdown"><div class="price-row"><span>Prix total</span><span class="price-value">'+priceDisplay+'</span></div>'+(pricePerNightDisplay?'<div class="price-row"><span>Par nuit ('+nights+' nuits)</span><span class="price-value-secondary">'+pricePerNightDisplay+'</span></div>':'')+(hd.boardType?'<div class="price-row"><span>Pension</span><span class="board-badge">'+hd.boardType+'</span></div>':'')+'</div></div>' +
+            (description?'<div class="sidebar-section"><h3>Description</h3><div class="sidebar-description">'+description.substring(0,500)+'...</div></div>':'') +
+            (facilitiesList?'<div class="sidebar-section"><h3>Equipements</h3><ul class="sidebar-facilities">'+facilitiesList+(hasMore?'<li class="more-facilities">...et '+(facilities.length-12)+' autres</li>':'')+'</ul></div>':'') +
+            '<div class="sidebar-section"><h3>Horaires</h3><div class="check-times"><div class="check-item"><span class="check-label">Check-in</span><span class="check-value">'+checkinTime+'</span>'+(checkinStart?'<span class="check-sub">(des '+checkinStart+')</span>':'')+'</div><div class="check-item"><span class="check-label">Check-out</span><span class="check-value">'+checkoutTime+'</span></div></div></div>' +
+            '<div class="sidebar-section"><h3>Conditions d\'annulation</h3><div class="sidebar-cancellation">'+cancellationHtml+'</div></div>' +
+            (importantInfo?'<div class="sidebar-section"><h3>Informations importantes</h3><div class="sidebar-important">'+importantInfo+'</div></div>':'') +
+            (galleryHtml?'<div class="sidebar-section"><h3>Galerie</h3><div class="sidebar-gallery">'+galleryHtml+'</div></div>':'') +
+            '<a href="'+hotelDeepLink+'" target="_blank" rel="noopener" class="sidebar-book-btn" style="margin-top:20px;">Reserver sur STAYO</a>' +
         '</div>';
 }
 
 // ========== API ==========
-
 function clearAllMarkers() { markersLayer.clearLayers(); allMarkers = []; allHotelsData = []; }
+function haversineMeters(a, b) { var R=6371000, toRad=function(d){return d*Math.PI/180;}, dLat=toRad(b.lat-a.lat), dLng=toRad(b.lng-a.lng), lat1=toRad(a.lat), lat2=toRad(b.lat); return 2*R*Math.asin(Math.sqrt(Math.sin(dLat/2)*Math.sin(dLat/2)+Math.cos(lat1)*Math.cos(lat2)*Math.sin(dLng/2)*Math.sin(dLng/2))); }
+function getRadiusFromBounds() { var b=map.getBounds(), c=map.getCenter(), corners=[b.getNorthWest(),b.getNorthEast(),b.getSouthWest(),b.getSouthEast()], max=0; for(var i=0;i<4;i++) max=Math.max(max,haversineMeters(c,corners[i])); return Math.max(1000,Math.ceil(max*1.1)); }
+function makeCacheKey() { var c=map.getCenter(), z=map.getZoom(), g=z>=15?0.01:z>=12?0.03:0.06; return (Math.round(c.lat/g)*g).toFixed(4)+','+(Math.round(c.lng/g)*g).toFixed(4)+',z'+z+'|'+currentSearchParams.checkin+'|'+currentSearchParams.checkout+'|a'+currentSearchParams.adults+'|'+currentSearchParams.currency; }
+function getCached(k) { var v=ratesCache.get(k); if(!v) return null; if(Date.now()-v.t>CACHE_TTL_MS){ratesCache.delete(k);return null;} return v.data; }
+function setCached(k,d) { ratesCache.forEach(function(v,k){if(Date.now()-v.t>CACHE_TTL_MS) ratesCache.delete(k);}); ratesCache.set(k,{t:Date.now(),data:d}); }
 
-function haversineMeters(a, b) {
-    var R = 6371000;
-    var toRad = function(d) { return d * Math.PI / 180; };
-    var dLat = toRad(b.lat - a.lat), dLng = toRad(b.lng - a.lng);
-    var lat1 = toRad(a.lat), lat2 = toRad(b.lat);
-    return 2 * R * Math.asin(Math.sqrt(Math.sin(dLat/2)*Math.sin(dLat/2) + Math.cos(lat1)*Math.cos(lat2)*Math.sin(dLng/2)*Math.sin(dLng/2)));
+async function fetchHotelsData(lat, lng, radius, rid) {
+    if(activeController) activeController.abort(); activeController = new AbortController();
+    var r; try { r = await fetch(BASE_URL+'/data/hotels?'+new URLSearchParams({latitude:lat,longitude:lng,radius:radius,limit:200,offset:0,language:'fr'}),{headers:{'X-API-Key':API_KEY,'Accept':'application/json'},signal:activeController.signal}); } catch(e){ if(e.name!=='AbortError') console.error(e); return null; }
+    if(rid!==currentRequestId||!r.ok) return null;
+    var data = (await r.json()).data||[], map={};
+    data.forEach(function(h){ if(h.id&&h.latitude&&h.longitude) map[h.id]={id:h.id,name:h.name||'Hotel',lat:parseFloat(h.latitude),lng:parseFloat(h.longitude),address:h.address||'',city:h.city||'',country:h.country||'',thumbnail:h.thumbnail||h.main_photo||null,rating:h.rating?parseFloat(h.rating).toFixed(1):null,reviewCount:h.reviewCount||0,stars:h.stars||0}; });
+    return map;
 }
 
-function getRadiusFromBounds() {
-    var bounds = map.getBounds(), center = map.getCenter();
-    var corners = [bounds.getNorthWest(), bounds.getNorthEast(), bounds.getSouthWest(), bounds.getSouthEast()];
-    var max = 0;
-    for (var i = 0; i < corners.length; i++) {
-        max = Math.max(max, haversineMeters(center, corners[i]));
-    }
-    return Math.max(1000, Math.ceil(max * 1.10));
-}
-
-function makeCacheKey() {
-    var c = map.getCenter(), zoom = map.getZoom();
-    var grid = zoom >= 15 ? 0.01 : zoom >= 12 ? 0.03 : 0.06;
-    var latKey = (Math.round(c.lat / grid) * grid).toFixed(4);
-    var lngKey = (Math.round(c.lng / grid) * grid).toFixed(4);
-    var checkin = document.getElementById('checkin').value;
-    var checkout = document.getElementById('checkout').value;
-    var adults = document.getElementById('adults').value;
-    var currency = document.getElementById('currency').value;
-    return latKey + ',' + lngKey + ',z' + zoom + '|' + checkin + '|' + checkout + '|a' + adults + '|' + currency;
-}
-
-function getCached(key) {
-    var v = ratesCache.get(key);
-    if (!v) return null;
-    if (Date.now() - v.t > CACHE_TTL_MS) { ratesCache.delete(key); return null; }
-    return v.data;
-}
-
-function setCached(key, data) {
-    ratesCache.forEach(function(v, k) { if (Date.now() - v.t > CACHE_TTL_MS) ratesCache.delete(k); });
-    ratesCache.set(key, { t: Date.now(), data: data });
-}
-
-async function fetchHotelsData(lat, lng, radius, requestId) {
-    var params = new URLSearchParams({ latitude: lat, longitude: lng, radius: radius, limit: 200, offset: 0, language: 'fr' });
-    if (activeController) activeController.abort();
-    activeController = new AbortController();
-    var res;
-    try {
-        res = await fetch(BASE_URL + '/data/hotels?' + params.toString(), {
-            headers: { 'X-API-Key': API_KEY, 'Accept': 'application/json' },
-            signal: activeController.signal
-        });
-    } catch (err) { if (err.name !== 'AbortError') console.error(err); return null; }
-    if (requestId !== currentRequestId || !res.ok) return null;
-    var json = await res.json();
-    var hotelsMap = {};
-    if (Array.isArray(json.data)) {
-        json.data.forEach(function(h) {
-            if (h.id && h.latitude && h.longitude) {
-                hotelsMap[h.id] = {
-                    id: h.id, name: h.name || 'Hotel', lat: parseFloat(h.latitude), lng: parseFloat(h.longitude),
-                    address: h.address || '', city: h.city || '', country: h.country || '',
-                    thumbnail: h.thumbnail || h.main_photo || null,
-                    rating: h.rating ? parseFloat(h.rating).toFixed(1) : null,
-                    reviewCount: h.reviewCount || 0, stars: h.stars || 0
-                };
-            }
-        });
-    }
-    return hotelsMap;
-}
-
-async function fetchRates(hotelIds, checkin, checkout, currency, adults, requestId) {
-    if (!hotelIds.length) return {};
-    var body = {
-        checkin: checkin, checkout: checkout, currency: currency,
-        guestNationality: 'FR', occupancies: [{ adults: adults }],
-        hotelIds: hotelIds.slice(0, 100), maxRatesPerHotel: 1, limit: 100, timeout: 8
-    };
-    var ctrl = new AbortController(), tid = setTimeout(function() { ctrl.abort(); }, 15000);
-    var res;
-    try {
-        res = await fetch(BASE_URL + '/hotels/rates', {
-            method: 'POST',
-            headers: { 'X-API-Key': API_KEY, 'Content-Type': 'application/json' },
-            body: JSON.stringify(body), signal: ctrl.signal
-        });
-    } catch (err) { clearTimeout(tid); if (err.name !== 'AbortError') console.error(err); return {}; }
-    clearTimeout(tid);
-    if (requestId !== currentRequestId || !res.ok) return {};
-    var json = await res.json();
-    var pm = {};
-    if (Array.isArray(json.data)) {
-        json.data.forEach(function(h) {
-            var rt = h.roomTypes && h.roomTypes[0];
-            var p = (rt && rt.offerRetailRate && rt.offerRetailRate.amount)
-                || (rt && rt.rates && rt.rates[0] && rt.rates[0].retailRate && rt.rates[0].retailRate.total && rt.rates[0].retailRate.total[0] && rt.rates[0].retailRate.total[0].amount)
-                || (rt && rt.rates && rt.rates[0] && rt.rates[0].retailRate && rt.rates[0].retailRate.amount)
-                || null;
-            p = p != null ? Math.round(Number(p)) : null;
-            pm[h.hotelId] = {
-                price: p,
-                offerId: (rt && rt.offerId) || null,
-                boardType: (rt && rt.rates && rt.rates[0] && (rt.rates[0].boardName || rt.rates[0].boardType)) || null,
-                refundable: (rt && rt.cancellationPolicies && rt.cancellationPolicies.refundableTag) || null
-            };
-        });
-    }
+async function fetchRates(ids, ci, co, cu, ad, rid) {
+    if(!ids.length) return {};
+    var ctrl=new AbortController(), tid=setTimeout(function(){ctrl.abort();},15000), r;
+    try { r = await fetch(BASE_URL+'/hotels/rates',{method:'POST',headers:{'X-API-Key':API_KEY,'Content-Type':'application/json'},body:JSON.stringify({hotelIds:ids.slice(0,100),checkin:ci,checkout:co,currency:cu,guestNationality:'FR',occupancies:[{adults:ad}],maxRatesPerHotel:1,limit:100,timeout:8}),signal:ctrl.signal}); } catch(e){ clearTimeout(tid); if(e.name!=='AbortError') console.error(e); return {}; }
+    clearTimeout(tid); if(rid!==currentRequestId||!r.ok) return {};
+    var pm={};
+    (await r.json()).data.forEach(function(h){ var rt=(h.roomTypes||[{}])[0], p=rt&&rt.offerRetailRate?rt.offerRetailRate.amount:(rt&&rt.rates&&rt.rates[0]&&rt.rates[0].retailRate&&rt.rates[0].retailRate.total?rt.rates[0].retailRate.total[0].amount:(rt&&rt.rates&&rt.rates[0]&&rt.rates[0].retailRate?rt.rates[0].retailRate.amount:null)); pm[h.hotelId]={price:p!=null?Math.round(Number(p)):null,offerId:rt&&rt.offerId||null,boardType:rt&&rt.rates&&rt.rates[0]&&(rt.rates[0].boardName||rt.rates[0].boardType)||null,refundable:rt&&rt.cancellationPolicies&&rt.cancellationPolicies.refundableTag||null}; });
     return pm;
 }
 
-function renderHotels(hotelsMap, pricesMap) {
-    clearAllMarkers();
-    var currency = document.getElementById('currency').value;
-    var wp = 0;
-    Object.values(hotelsMap).forEach(function(h) {
-        var pd = pricesMap[h.id] || {};
-        var hd = {
-            id: h.id, name: h.name, lat: h.lat, lng: h.lng,
-            address: h.address, city: h.city, country: h.country,
-            thumbnail: h.thumbnail, rating: h.rating, reviewCount: h.reviewCount, stars: h.stars,
-            price: pd.price || null, offerId: pd.offerId || null, currency: currency,
-            boardType: pd.boardType || null, refundable: pd.refundable || null,
-            location: [h.address, h.city, h.country].filter(Boolean).join(', ') || 'Localisation non disponible'
-        };
-        var icon = hd.price ? createPriceIcon(hd.price, currency) : createNoPriceIcon();
-        var m = L.marker([hd.lat, hd.lng], { icon: icon, interactive: true });
-        m.on('mouseover', function(e) { showTooltip(e, hd); });
-        m.on('mousemove', function(e) { positionTooltip(e); });
-        m.on('mouseout', hideTooltip);
-        m.on('click', function() {
-            map.setView([hd.lat, hd.lng], Math.max(map.getZoom(), 15), { animate: true, duration: 0.3 });
-            openHotelSidebar(hd);
-        });
+function renderHotels(hm, pm) {
+    clearAllMarkers(); var cu=currentSearchParams.currency;
+    Object.values(hm).forEach(function(h){ var pd=pm[h.id]||{}, hd={id:h.id,name:h.name,lat:h.lat,lng:h.lng,address:h.address,city:h.city,country:h.country,thumbnail:h.thumbnail,rating:h.rating,reviewCount:h.reviewCount,stars:h.stars,price:pd.price||null,offerId:pd.offerId||null,currency:cu,boardType:pd.boardType||null,refundable:pd.refundable||null,location:[h.address,h.city,h.country].filter(Boolean).join(', ')||'Localisation non disponible'};
+        var m = L.marker([hd.lat,hd.lng],{icon:hd.price?createPriceIcon(hd.price,cu):createNoPriceIcon(),interactive:true});
+        m.on('click',function(){map.setView([hd.lat,hd.lng],Math.max(map.getZoom(),15),{animate:true,duration:0.3});openHotelSidebar(hd);});
         m.addTo(markersLayer); allMarkers.push(m); allHotelsData.push(hd);
-        if (hd.price) wp++;
     });
-    document.getElementById('hotelCount').textContent = String(allMarkers.length);
+    showHotelCount(allMarkers.length);
 }
 
 async function loadHotelsForViewport() {
-    var key = makeCacheKey(), rid = ++currentRequestId;
-    var cached = getCached(key);
-    if (cached) { renderHotels(cached.hotels, cached.prices); return; }
-    loadingBar.classList.add('active'); clearAllMarkers();
-    var center = map.getCenter(), radius = getRadiusFromBounds();
-    var ci = document.getElementById('checkin').value, co = document.getElementById('checkout').value;
-    var ad = parseInt(document.getElementById('adults').value, 10) || 2;
-    var cu = document.getElementById('currency').value;
+    var key=makeCacheKey(), rid=++currentRequestId, cached=getCached(key);
+    if(cached){renderHotels(cached.hotels,cached.prices);return;}
+    var lb=document.getElementById('loadingBar'); if(lb) lb.classList.add('active');
+    clearAllMarkers(); var c=map.getCenter(), radius=getRadiusFromBounds();
     try {
-        var hm = await fetchHotelsData(center.lat, center.lng, radius, rid);
-        if (!hm || rid !== currentRequestId) { loadingBar.classList.remove('active'); return; }
-        var ids = Object.keys(hm);
-        if (!ids.length) { loadingBar.classList.remove('active'); return; }
-        var pm = await fetchRates(ids, ci, co, cu, ad, rid);
-        if (rid !== currentRequestId) { loadingBar.classList.remove('active'); return; }
-        setCached(key, { hotels: hm, prices: pm });
-        renderHotels(hm, pm);
-    } catch (e) { if (e.name !== 'AbortError') showToast('Erreur: ' + e.message, true); }
-    finally { if (rid === currentRequestId) loadingBar.classList.remove('active'); }
+        var hm=await fetchHotelsData(c.lat,c.lng,radius,rid);
+        if(!hm||rid!==currentRequestId){if(lb)lb.classList.remove('active');return;}
+        var ids=Object.keys(hm); if(!ids.length){if(lb)lb.classList.remove('active');return;}
+        var pm=await fetchRates(ids,currentSearchParams.checkin,currentSearchParams.checkout,currentSearchParams.currency,currentSearchParams.adults,rid);
+        if(rid!==currentRequestId){if(lb)lb.classList.remove('active');return;}
+        setCached(key,{hotels:hm,prices:pm}); renderHotels(hm,pm);
+    } catch(e){ if(e.name!=='AbortError') showToast('Erreur: '+e.message,true); }
+    finally { if(rid===currentRequestId&&lb) lb.classList.remove('active'); }
 }
 
+function refreshViewportSearch() { ratesCache.clear(); clearTimeout(updateTimeout); updateTimeout = setTimeout(loadHotelsForViewport, 0); }
 map.on('moveend', function() { clearTimeout(updateTimeout); updateTimeout = setTimeout(loadHotelsForViewport, 400); });
 
-function refreshViewportSearch() { ratesCache.clear(); clearTimeout(updateTimeout); updateTimeout = setTimeout(loadHotelsForViewport, 0); }
+// ========== USER PANEL ==========
+function toggleUserPanel() {
+    var panel = document.getElementById('userPanel');
+    if (panel) panel.classList.toggle('open');
+}
+// Générer un user_id aléatoire (ou récupérer du localStorage)
+function getUserId() {
+    var userId = localStorage.getItem('stayo_user_id');
+    if (!userId) {
+        userId = 'user_' + Math.random().toString(36).substr(2, 9);
+        localStorage.setItem('stayo_user_id', userId);
+    }
+    return userId;
+}
+// ========== SAVE SEARCH HISTORY ==========
+function saveSearchToHistory(query) {
+    var currentUser = JSON.parse(localStorage.getItem('stayo_user') || 'null');
+    if (!currentUser) return;
+    var searches = JSON.parse(localStorage.getItem('stayo_searches') || '[]');
+    searches.unshift({ query: query, date: new Date().toLocaleDateString('fr-FR') });
+    if (searches.length > 20) searches = searches.slice(0, 20);
+    localStorage.setItem('stayo_searches', JSON.stringify(searches));
+}
+// Modifier callEngine pour inclure user_id
+async function callEngine(query) {
+    if (!query) return;
+    if (aiSendBtn) aiSendBtn.disabled = true;
+    var loadingId = appendMessage('bot', '<div class="spinner" style="width:20px;height:20px;margin:10px;"></div>');
+    try {
+        var userId = getUserId();
+        var r = await fetch(STAYO_ENGINE_URL + '/recommend', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                query: query,
+                checkin: currentSearchParams.checkin,
+                checkout: currentSearchParams.checkout,
+                adults: currentSearchParams.adults,
+                currency: currentSearchParams.currency,
+                user_id: userId
+            })
+        });
+        if (!r.ok) throw new Error('Engine error');
+        var data = await r.json();
+        var el = document.getElementById(loadingId); if (el) el.remove();
+        
+        if (data.hotels && data.hotels.length > 0) {
+            var msg = '<p><strong>' + (data.message || "Voici mes recommandations :") + '</strong></p>';
+            var cardsHtml = data.hotels.slice(0, 3).map(function(h, i) {
+                var exp = data.explanations ? data.explanations[i] : null;
+                var confHtml = exp ? '<span style="font-size:10px;color:' + (exp.confidence >= 80 ? '#16a34a' : '#d97706') + ';">' + exp.confidence + '%</span>' : '';
+                return '<div class="ai-hotel-card" onclick="focusHotel(\'' + h.id + '\', ' + h.lat + ', ' + h.lng + ', ' + (i+1) + ')"><h4>' + h.name + '</h4><div style="display:flex;justify-content:space-between;"><span>' + (h.rating||'?') + ' | ' + (h.distance_event_minutes||'?') + ' min</span><span class="price">' + (h.price||'?') + '€ ' + confHtml + '</span></div></div>';
+            }).join('');
+            appendMessage('bot', msg + cardsHtml);
+            updateMapFromEngine(data.hotels, data.explanations);
+        } else {
+            appendMessage('bot', "Aucun hotel trouve.");
+        }
+    } catch (e) {
+        var el = document.getElementById(loadingId); if (el) el.remove();
+        appendMessage('bot', "Erreur de connexion au moteur.");
+    } finally {
+               if (aiSendBtn) aiSendBtn.disabled = false;
+    }
+    // Sauvegarder dans l'historique
+    saveSearchToHistory(query);
+}
+// Mettre à jour focusHotel pour tracker les clics
+function focusHotel(id, lat, lng, position) {
+    map.setView([lat, lng], 16, { animate: true });
+    var h = allHotelsData.find(function(h) { return h.id === id; });
+    if (h) {
+        // Tracker le clic
+        trackClick(id, h.name, h.price, h.score, position);
+        // Ouvrir la sidebar avec explications
+        openHotelSidebarWithExplanations(h, position);
+    }
+}
 
-document.getElementById('checkin').addEventListener('change', refreshViewportSearch);
-document.getElementById('checkout').addEventListener('change', refreshViewportSearch);
-document.getElementById('adults').addEventListener('change', refreshViewportSearch);
-document.getElementById('currency').addEventListener('change', refreshViewportSearch);
+// Tracker les clics pour l'apprentissage
+async function trackClick(hotelId, hotelName, price, score, position) {
+    var userId = getUserId();
+    try {
+        await fetch(STAYO_ENGINE_URL + '/click', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                query: hotelId,
+                user_id: userId
+            })
+        });
+    } catch (e) { /* silencieux */ }
+}
+
+// Sidebar avec explications
+function openHotelSidebarWithExplanations(hd, position) {
+    // Appeler la sidebar existante puis ajouter les explications
+    openHotelSidebar(hd);
+    
+    // Chercher les explications dans les données du moteur
+    var exp = allExplanations ? allExplanations[position - 1] : null;
+    if (exp && exp.reasons && exp.reasons.length > 0) {
+        setTimeout(function() {
+            var body = document.querySelector('.sidebar-body');
+            if (body) {
+                var reasonsHtml = '<div class="sidebar-explanations"><h3>Pourquoi cet hotel ?</h3>' +
+                    exp.reasons.map(function(r) { return '<div class="reason positive">' + r + '</div>'; }).join('') +
+                    (exp.warnings && exp.warnings.length > 0 ? exp.warnings.map(function(w) { return '<div class="reason negative">' + w + '</div>'; }).join('') : '') +
+                    '<div class="sidebar-confidence">Confiance : ' + exp.confidence + '%</div>' +
+                    '</div>';
+                var firstSection = body.querySelector('.sidebar-book-btn');
+                if (firstSection) {
+                    firstSection.insertAdjacentHTML('beforebegin', reasonsHtml);
+                }
+            }
+        }, 500);
+    }
+}
+
+// Variable globale pour stocker les explications
+var allExplanations = [];
+
+// Modifier updateMapFromEngine pour stocker les explications
+function updateMapFromEngine(hotels, explanations) {
+    clearAllMarkers();
+    if (explanations) allExplanations = explanations;
+    hotels.forEach(function(h) {
+        var m = L.marker([h.lat, h.lng], { icon: h.price ? createPriceIcon(h.price, currentSearchParams.currency) : createNoPriceIcon(), interactive: true });
+        m.on('click', function() { map.setView([h.lat, h.lng], 16, { animate: true }); openHotelSidebar(h); });
+        m.addTo(markersLayer); allMarkers.push(m); allHotelsData.push(h);
+    });
+    showHotelCount(hotels.length);
+}
+// ========== AI CHATBOT ==========
+var aiChatContainer = document.getElementById('aiChatContainer');
+var aiUserInput = document.getElementById('aiUserInput');
+var aiSendBtn = document.getElementById('aiSendBtn');
+
+// Chatbot : Entrée clavier
+if (aiUserInput) {
+    aiUserInput.addEventListener('keypress', function(e) {
+        if (e.key === 'Enter') {
+            var q = aiUserInput.value.trim();
+            if (!q) return;
+            appendMessage('user', q);
+            aiUserInput.value = '';
+            callEngine(q);
+        }
+    });
+}
+
+// Barre du haut : Entrée clavier → appel direct (pas de double envoi)
+var aiSearchInput = document.getElementById('aiSearchInput');
+if (aiSearchInput) {
+    aiSearchInput.addEventListener('keypress', function(e) {
+        if (e.key === 'Enter') {
+            var q = aiSearchInput.value.trim();
+            if (!q) return;
+            appendMessage('user', q);
+            aiSearchInput.value = '';
+            callEngine(q);
+        }
+    });
+}
+
+// Suggestions rapides
+function sendQuickReply(t) {
+    appendMessage('user', t);
+    callEngine(t);
+}
+
+// Bouton envoi chatbot
+if (aiSendBtn) {
+    aiSendBtn.addEventListener('click', function() {
+        var q = aiUserInput ? aiUserInput.value.trim() : '';
+        if (!q) return;
+        appendMessage('user', q);
+        if (aiUserInput) aiUserInput.value = '';
+        callEngine(q);
+    });
+}
+
+function appendMessage(type, content) {
+    var id = 'msg-' + Date.now(), div = document.createElement('div');
+    div.className = 'ai-message ' + type; div.id = id;
+    div.innerHTML = type === 'bot'
+        ? '<div class="ai-avatar"><img src="https://ukbekfcjfcjcqrpxfpmq.supabase.co/storage/v1/object/public/logo%20luvia/STAYO%20ICON%20PIN.png" alt="AI" /></div><div class="ai-bubble">' + content + '</div>'
+        : '<div style="flex:1;"></div><div class="ai-bubble" style="background:var(--primary-light);color:var(--primary-dark);">' + content + '</div>';
+    if (aiChatContainer) { aiChatContainer.appendChild(div); aiChatContainer.scrollTop = aiChatContainer.scrollHeight; }
+    return id;
+}
+
+function focusHotel(id, lat, lng) {
+    map.setView([lat, lng], 16, { animate: true });
+    var h = allHotelsData.find(function(h) { return h.id === id; });
+    if (h) openHotelSidebar(h);
+}
+
+function updateMapFromEngine(hotels) {
+    clearAllMarkers();
+    hotels.forEach(function(h) {
+        var m = L.marker([h.lat, h.lng], { icon: h.price ? createPriceIcon(h.price, currentSearchParams.currency) : createNoPriceIcon(), interactive: true });
+        m.on('click', function() { map.setView([h.lat, h.lng], 16, { animate: true }); openHotelSidebar(h); });
+        m.addTo(markersLayer); allMarkers.push(m); allHotelsData.push(h);
+    });
+    showHotelCount(hotels.length);
+}
+
+async function findNearestHotel(lat, lng) {
+    currentSearchParams.lat = lat; currentSearchParams.lng = lng; ratesCache.clear();
+    await loadHotelsForViewport();
+    if (allHotelsData.length > 0) {
+        var nearest = allHotelsData.sort(function(a, b) { return (a.distance_event_minutes||999) - (b.distance_event_minutes||999); })[0];
+        if (nearest) {
+            openHotelSidebar(nearest);
+            appendMessage('bot', "L'hotel le plus proche est <strong>" + nearest.name + "</strong>" + (nearest.price ? " a " + nearest.price + "€" : "") + (nearest.distance_event_minutes ? " (" + nearest.distance_event_minutes + " min)" : ""));
+        }
+    }
+}
 
 setTimeout(loadHotelsForViewport, 500);
